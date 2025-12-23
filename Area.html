@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>面積探索家 - 完美線條版</title>
+    <script src="https://unpkg.com/konva@9/konva.min.js"></script>
+    <style>
+        body { font-family: 'PingFang TC', sans-serif; margin: 0; background: #f0f2f5; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+        #toolbar { background: #2c3e50; color: white; padding: 10px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; z-index: 100; }
+        .btn { padding: 10px 15px; cursor: pointer; border: none; border-radius: 6px; background: #3498db; color: white; font-weight: bold; transition: 0.2s; }
+        .btn:hover { background: #2980b9; transform: scale(1.05); }
+        .btn.active { background: #e74c3c; box-shadow: 0 0 10px rgba(231, 76, 60, 0.5); }
+        .btn:disabled { background: #95a5a6; opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
+        
+        #canvas-container { flex-grow: 1; position: relative; background: #fff; }
+        #ui-overlay { position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%); background: rgba(255,255,255,0.95); padding: 15px 30px; border-radius: 50px; box-shadow: 0 8px 30px rgba(0,0,0,0.15); display: flex; gap: 15px; align-items: center; z-index: 100; }
+        .hint-bar { background: #fffbe6; border-bottom: 1px solid #ffe58f; padding: 5px; text-align: center; font-size: 0.9rem; color: #856404; }
+        input { width: 60px; padding: 8px; font-size: 1.2rem; border: 2px solid #ddd; border-radius: 8px; text-align: center; }
+    </style>
+</head>
+<body>
+
+<div id="toolbar">
+    <button class="btn" onclick="spawn('rect')">隨機長方形</button>
+    <button class="btn" onclick="spawn('para')">隨機平行四邊形</button>
+    <button class="btn" onclick="spawn('tri')">隨機三角形</button>
+    <button class="btn" onclick="spawn('trap')">隨機梯形</button>
+    <div style="width: 2px; background: #555; margin: 0 10px;"></div>
+    <button id="cutBtn" class="btn" style="background: #e67e22;" onclick="toggleCutMode()">✂️ 準備切割 (點兩下)</button>
+    <button class="btn" style="background: #9b59b6;" onclick="duplicate()">👯 複製一個</button>
+    <button class="btn" style="background: #95a5a6;" onclick="resetBoard()">🗑️ 清除重來</button>
+</div>
+<div class="hint-bar" id="msg">模式：拖曳物件。點擊形狀可以旋轉 90 度。</div>
+
+<div id="canvas-container">
+    <div id="konva-holder"></div>
+</div>
+
+<div id="ui-overlay">
+    <b>面積填答：</b>
+    <input type="number" id="answer">
+    <span>cm²</span>
+    <button class="btn" style="background: #27ae60;" onclick="checkAnswer()">檢查答案</button>
+</div>
+
+<script>
+    const GRID = 40;
+    let stage, shapeLayer, gridLayer, tempLayer;
+    let isCutMode = false, cutPoints = [], currentTargetArea = 0;
+    let currentShapeType = ''; 
+
+    function init() {
+        stage = new Konva.Stage({
+            container: 'konva-holder',
+            width: window.innerWidth,
+            height: window.innerHeight - 150
+        });
+
+        shapeLayer = new Konva.Layer();
+        tempLayer = new Konva.Layer();
+        gridLayer = new Konva.Layer();
+
+        stage.add(shapeLayer, gridLayer, tempLayer); 
+        
+        drawGrid();
+        spawn('para'); 
+    }
+
+    function drawGrid() {
+        gridLayer.destroyChildren();
+        const gridColor = 'rgba(0, 0, 0, 0.2)'; 
+
+        for (let i = 0; i <= stage.width() / GRID; i++) {
+            gridLayer.add(new Konva.Line({ 
+                points: [i * GRID, 0, i * GRID, stage.height()], 
+                stroke: gridColor, strokeWidth: 1, listening: false 
+            }));
+        }
+        for (let j = 0; j <= stage.height() / GRID; j++) {
+            gridLayer.add(new Konva.Line({ 
+                points: [0, j * GRID, stage.width(), j * GRID], 
+                stroke: gridColor, strokeWidth: 1, listening: false 
+            }));
+        }
+    }
+
+    function createShape(pts, x, y, color) {
+        const shape = new Konva.Line({
+            points: pts,
+            fill: color || '#a29bfe',
+            stroke: '#2c3e50',
+            strokeWidth: 2,
+            closed: true,
+            draggable: true,
+            lineJoin: 'round', // 【修正點】解決尖角突出的問題
+            x: x, y: y
+        });
+
+        shape.on('dragend', () => {
+            shape.x(Math.round(shape.x() / GRID) * GRID);
+            shape.y(Math.round(shape.y() / GRID) * GRID);
+            shapeLayer.draw();
+        });
+
+        shape.on('click tap', (e) => {
+            if (isCutMode && !document.getElementById('cutBtn').disabled) {
+                const pos = stage.getPointerPosition();
+                const transform = shape.getAbsoluteTransform().copy().invert();
+                const localPos = transform.point(pos);
+                
+                const sx = Math.round(localPos.x / GRID) * GRID;
+                const sy = Math.round(localPos.y / GRID) * GRID;
+                
+                cutPoints.push({ x: sx, y: sy });
+                
+                const dotPos = shape.getAbsoluteTransform().point({x: sx, y: sy});
+                tempLayer.add(new Konva.Circle({ x: dotPos.x, y: dotPos.y, radius: 6, fill: '#e74c3c', stroke: 'white', strokeWidth: 2 }));
+                tempLayer.draw();
+
+                if (cutPoints.length === 2) {
+                    executeCut(shape, cutPoints[0], cutPoints[1]);
+                }
+            } else {
+                shape.rotation(shape.rotation() + 90);
+                shapeLayer.draw();
+            }
+        });
+
+        shapeLayer.add(shape);
+        shapeLayer.draw();
+        return shape;
+    }
+
+    function executeCut(shape, pA, pB) {
+        const rawPts = shape.points();
+        const x = shape.x(), y = shape.y(), rot = shape.rotation(), color = shape.fill();
+
+        let vertices = [];
+        for (let i = 0; i < rawPts.length; i += 2) {
+            vertices.push({ x: rawPts[i], y: rawPts[i + 1] });
+        }
+
+        const cutX = (pA.x + pB.x) / 2;
+        const isLeft = (p) => p.x <= cutX + 0.1; 
+
+        const getIntersection = (p1, p2) => {
+            const t = (cutX - p1.x) / (p2.x - p1.x);
+            return { x: cutX, y: p1.y + t * (p2.y - p1.y) };
+        };
+
+        let leftPoly = [], rightPoly = [];
+
+        for (let i = 0; i < vertices.length; i++) {
+            const curr = vertices[i];
+            const next = vertices[(i + 1) % vertices.length]; 
+
+            const currIsLeft = isLeft(curr);
+            const nextIsLeft = isLeft(next);
+
+            if (currIsLeft) leftPoly.push(curr);
+            if (currIsLeft !== nextIsLeft) { 
+                const intersection = getIntersection(curr, next);
+                leftPoly.push(intersection);
+            }
+
+            if (!currIsLeft) rightPoly.push(curr);
+            if (currIsLeft !== nextIsLeft) { 
+                const intersection = getIntersection(curr, next);
+                rightPoly.push(intersection);
+            }
+        }
+
+        if (leftPoly.length < 3 || rightPoly.length < 3) {
+            alert("⚠️ 切割位置太靠近邊緣，沒有切出形狀喔！請往中間一點切。");
+            finishCut();
+            return;
+        }
+
+        const flatLeft = leftPoly.flatMap(p => [p.x, p.y]);
+        const flatRight = rightPoly.flatMap(p => [p.x, p.y]);
+
+        shape.destroy();
+        
+        const s1 = createShape(flatLeft, x, y, color);
+        s1.rotation(rot);
+        const s2 = createShape(flatRight, x, y, '#fab1a0'); 
+        s2.rotation(rot);
+        
+        finishCut();
+        document.getElementById('msg').innerText = "切開了！數數看格子，或者拼成長方形？";
+    }
+
+    function spawn(type) {
+        currentShapeType = type; 
+        resetBoard();
+        updateButtons(); 
+
+        const bx = GRID * 5, by = GRID * 3;
+        let p = [];
+        
+        const w = Math.floor(Math.random() * 3) + 4; 
+        const h = Math.floor(Math.random() * 2) + 3; 
+        const offset = Math.floor(Math.random() * 4) - 1; 
+
+        if (type === 'rect') {
+            p = [0,0, w*GRID,0, w*GRID,h*GRID, 0,h*GRID];
+            currentTargetArea = w * h;
+            document.getElementById('msg').innerText = "這是一個長方形。";
+        } else if (type === 'para') {
+            p = [offset*GRID, 0, (w+offset)*GRID, 0, w*GRID, h*GRID, 0, h*GRID];
+            currentTargetArea = w * h;
+            document.getElementById('msg').innerText = "這是平行四邊形，試著沿著高垂直切割。";
+        } else if (type === 'tri') {
+            p = [offset*GRID, 0, w*GRID, h*GRID, 0, h*GRID];
+            currentTargetArea = (w * h) / 2;
+            document.getElementById('msg').innerText = "這是三角形，複製一個拼拼看？";
+            
+            const helperX = (offset < 0 || offset > w) ? (offset < 0 ? 0 : w*GRID) : null;
+            if(helperX !== null) {
+                shapeLayer.add(new Konva.Line({
+                    points: [offset*GRID, 0, offset*GRID, h*GRID, helperX, h*GRID],
+                    stroke: '#7f8c8d', strokeWidth: 2, dash: [5, 5], 
+                    x: bx, y: by, listening: false
+                }));
+            }
+        } else if (type === 'trap') {
+            const topW = Math.floor(Math.random() * 2) + 2;
+            p = [offset*GRID, 0, (topW+offset)*GRID, 0, w*GRID, h*GRID, 0, h*GRID];
+            currentTargetArea = (topW + w) * h / 2;
+            document.getElementById('msg').innerText = "這是梯形，嘗試複製拼湊成長方形。";
+        }
+
+        createShape(p, bx, by, '#a29bfe');
+    }
+
+    function updateButtons() {
+        const cutBtn = document.getElementById('cutBtn');
+        if (currentShapeType === 'tri' || currentShapeType === 'trap') {
+            cutBtn.disabled = true;
+            finishCut(); 
+        } else {
+            cutBtn.disabled = false;
+        }
+    }
+
+    function toggleCutMode() {
+        if (document.getElementById('cutBtn').disabled) return; 
+
+        isCutMode = !isCutMode;
+        cutPoints = [];
+        tempLayer.destroyChildren();
+        tempLayer.draw();
+        const btn = document.getElementById('cutBtn');
+        if (isCutMode) {
+            btn.classList.add('active');
+            btn.innerHTML = "❌ 取消切割";
+            document.getElementById('msg').innerText = "【切割模式】請在圖形上下邊緣各點一下 (垂直切割)";
+        } else {
+            btn.classList.remove('active');
+            btn.innerHTML = "✂️ 準備切割 (點兩下)";
+            document.getElementById('msg').innerText = "模式：拖曳或點擊旋轉";
+        }
+    }
+
+    function finishCut() {
+        isCutMode = false;
+        cutPoints = [];
+        tempLayer.destroyChildren();
+        tempLayer.draw();
+        const btn = document.getElementById('cutBtn');
+        btn.classList.remove('active');
+        btn.innerHTML = "✂️ 準備切割 (點兩下)";
+    }
+
+    function duplicate() {
+        const shapes = shapeLayer.getChildren().filter(s => s.getClassName() === 'Line');
+        if (shapes.length > 0) {
+            const last = shapes[shapes.length-1];
+            const clone = createShape(last.points(), last.x()+20, last.y()+20, '#ffeaa7');
+            clone.rotation(last.rotation());
+        }
+    }
+
+    function resetBoard() {
+        shapeLayer.destroyChildren();
+        tempLayer.destroyChildren();
+        shapeLayer.draw();
+        tempLayer.draw();
+        document.getElementById('answer').value = "";
+    }
+
+    function checkAnswer() {
+        const val = parseFloat(document.getElementById('answer').value);
+        if (Math.abs(val - currentTargetArea) < 0.01) {
+            alert("🎉 答對了！太棒了！");
+        } else {
+            alert(`答案不對喔！請再仔細數數看格子的數量，或是重新拼湊看看。`);
+        }
+    }
+
+    window.onload = init;
+    window.onresize = () => {
+        stage.width(window.innerWidth);
+        stage.height(window.innerHeight - 150);
+        drawGrid();
+    };
+</script>
+</body>
+</html>
